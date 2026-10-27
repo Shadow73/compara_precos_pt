@@ -8,6 +8,7 @@ import { searchContinente } from './adapters/continente.js';
 import { searchPingoDoce } from './adapters/pingoDoce.js';
 import { searchAuchan } from './adapters/auchan.js';
 import { searchLidl } from './adapters/lidl.js';
+import { searchIntermarche } from './adapters/intermarche.js';
 import { searchDemo } from './adapters/demo.js';
 import { closeBrowser } from './browser.js';
 
@@ -21,6 +22,7 @@ const adapters = [
   { name: 'Pingo Doce', fn: searchPingoDoce },
   { name: 'Auchan', fn: searchAuchan },
   { name: 'Lidl', fn: searchLidl, timeoutMs: 45000 },
+  { name: 'Intermarché', fn: searchIntermarche, timeoutMs: 60000 },
 ];
 
 // CORS: o frontend no Vercel chama este backend noutro domínio.

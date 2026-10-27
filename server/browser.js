@@ -45,7 +45,7 @@ const CHALLENGE_RE =
 export async function getContext() {
   if (context) return context;
 
-  const { chromium } = await import('playwright');
+  const chromium = await loadChromium();
   const launchOptions = {
     headless: process.env.BROWSER_HEADED === 'true' ? false : true,
     args: ['--disable-blink-features=AutomationControlled'],
