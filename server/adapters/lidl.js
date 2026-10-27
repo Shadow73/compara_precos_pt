@@ -80,11 +80,13 @@ async function searchViaBrowser(query) {
     })();
   });
 
+  const t0 = Date.now();
+  const elapsed = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
   try {
     const url = `${BASE}/q/search?q=${encodeURIComponent(query)}`;
     log(`browser: a abrir ${url}`);
-    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    log(`browser: goto HTTP ${res?.status()}`);
+    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    log(`browser: goto HTTP ${res?.status()} (${elapsed()})`);
 
     // ── espera pelos resultados ──
     // 1) texto "€" (preços renderizados)
@@ -92,14 +94,14 @@ async function searchViaBrowser(query) {
       .waitForFunction(() => (document.body?.innerText ?? '').includes('€'), { timeout: 12000 })
       .then(() => true)
       .catch(() => false);
-    log(`browser: texto "€" no corpo? ${hasEuro}`);
+    log(`browser: texto "€" no corpo? ${hasEuro} (${elapsed()})`);
 
     // 2) tiles de produto visíveis (seletor conhecido do storefront)
     const hasTiles = await page
       .waitForSelector('.product-grid-box', { timeout: 8000 })
       .then(() => true)
       .catch(() => false);
-    log(`browser: tiles .product-grid-box visíveis? ${hasTiles}`);
+    log(`browser: tiles .product-grid-box visíveis? ${hasTiles} (${elapsed()})`);
 
     await page.waitForTimeout(1500); // deixa as XHR acabarem
     log(`browser: ${jsonResponses.length} respostas JSON capturadas`);
@@ -118,13 +120,13 @@ async function searchViaBrowser(query) {
     for (const { json } of jsonResponses) {
       fromApi.push(...extractFromAnyJson(json));
     }
-    log(`extração API: ${fromApi.length} produtos`);
+    log(`extração API: ${fromApi.length} produtos (${elapsed()})`);
     if (fromApi.length > 0) return dedupe(fromApi);
 
     // 2b) fallback: DOM renderizado
     const html = await page.content();
     const fromDom = extractFromDom(html);
-    log(`extração DOM: ${fromDom.length} produtos`);
+    log(`extração DOM: ${fromDom.length} produtos (${elapsed()})`);
     if (fromDom.length === 0) {
       await saveDebugArtifacts(page, '(extração vazia)');
     }

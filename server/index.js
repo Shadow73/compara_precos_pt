@@ -15,14 +15,16 @@ import { closeBrowser } from './browser.js';
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// timeoutMs: adapters com browser/anti-bot precisam de mais tempo que os
-// de HTTP simples. O timeout por omissão (15 s) aplica-se ao resto.
+// timeoutMs: adapters com browser precisam de muito tempo em máquinas
+// pequenas (ex.: 512 MB do Render gratuito — cold start do Chromium +
+// carregamento de páginas pesadas pode demorar 1-2 min). O browser fica
+// reutilizado entre pesquisas, por isso só a PRIMEIRA pesquisa é lenta.
 const adapters = [
-  { name: 'Continente', fn: searchContinente, timeoutMs: 45000 },
+  { name: 'Continente', fn: searchContinente, timeoutMs: 120000 },
   { name: 'Pingo Doce', fn: searchPingoDoce },
   { name: 'Auchan', fn: searchAuchan },
-  { name: 'Lidl', fn: searchLidl, timeoutMs: 45000 },
-  { name: 'Intermarché', fn: searchIntermarche, timeoutMs: 60000 },
+  { name: 'Lidl', fn: searchLidl, timeoutMs: 120000 },
+  { name: 'Intermarché', fn: searchIntermarche, timeoutMs: 120000 },
 ];
 
 // CORS: o frontend no Vercel chama este backend noutro domínio.
