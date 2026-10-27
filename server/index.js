@@ -24,7 +24,7 @@ const adapters = [
   { name: 'Pingo Doce', fn: searchPingoDoce },
   { name: 'Auchan', fn: searchAuchan },
   { name: 'Lidl', fn: searchLidl, timeoutMs: 120000 },
-  { name: 'Intermarché', fn: searchIntermarche, timeoutMs: 120000 },
+//  { name: 'Intermarché', fn: searchIntermarche, timeoutMs: 120000 },
 ];
 
 // CORS: o frontend no Vercel chama este backend noutro domínio.
