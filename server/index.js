@@ -8,7 +8,7 @@ import { searchContinente } from './adapters/continente.js';
 import { searchPingoDoce } from './adapters/pingoDoce.js';
 import { searchAuchan } from './adapters/auchan.js';
 import { searchLidl } from './adapters/lidl.js';
-import { searchIntermarche } from './adapters/intermarche.js';
+//import { searchIntermarche } from './adapters/intermarche.js';
 import { searchDemo } from './adapters/demo.js';
 import { closeBrowser } from './browser.js';
 
