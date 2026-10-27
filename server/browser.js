@@ -42,6 +42,31 @@ const PROFILE_DIR = path.resolve(process.cwd(), 'browser-profile');
 const CHALLENGE_RE =
   /just a moment|checking your browser|verify you are human|attention required|cloudflare|temporariamente restrito|captcha-delivery|datadome/i;
 
+// Carrega o Chromium — stealth (playwright-extra) SÓ quando USE_STEALTH=true
+// (desenvolvimento local, ex.: Intermarché). Em produção usa-se o playwright
+// simples, garantindo correspondência com a imagem Docker e o browser embutido.
+let chromiumPromise = null;
+function loadChromium() {
+  if (!chromiumPromise) {
+    chromiumPromise = (async () => {
+      if (process.env.USE_STEALTH === 'true') {
+        try {
+          const mod = await import('playwright-extra');
+          const stealthMod = await import('puppeteer-extra-plugin-stealth');
+          mod.chromium.use(stealthMod.default());
+          console.log('[browser] playwright-extra + stealth ativo');
+          return mod.chromium;
+        } catch {
+          console.log('[browser] stealth pedido mas pacotes em falta — playwright simples');
+        }
+      }
+      const { chromium } = await import('playwright');
+      return chromium;
+    })();
+  }
+  return chromiumPromise;
+}
+
 export async function getContext() {
   if (context) return context;
 
