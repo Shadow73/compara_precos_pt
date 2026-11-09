@@ -10,7 +10,7 @@
 
 import express from 'express';
 import { searchContinente } from './adapters/continente.js';
-import { searchPingoDoce } from './adapters/pingodoce.js';
+import { searchPingoDoce } from './adapters/pingoDoce.js';
 import { searchAuchan } from './adapters/auchan.js';
 import { searchLidl } from './adapters/lidl.js';
 // Intermarché retirado da comparação (DataDome bloqueia IPs de datacenter;
