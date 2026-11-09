@@ -127,3 +127,96 @@ header { text-align: center; margin-bottom: 2rem; }
 
 .price-table a { color: #005baa; text-decoration: none; }
 .price-table a:hover { text-decoration: underline; }
+
+/* ── Separadores (tabs) ─────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+}
+
+.tabs button {
+  padding: 0.6rem 1.3rem;
+  border: 2px solid #d0d3d9;
+  background: #fff;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #555;
+}
+
+.tabs button.active {
+  background: #005baa;
+  border-color: #005baa;
+  color: #fff;
+}
+
+/* ── Lista de compras ─────────────────────────────────────────── */
+.basket-items {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.basket-items li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #fff;
+  border: 1px solid #d0d3d9;
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.95rem;
+}
+
+.basket-items .remove {
+  border: none;
+  background: none;
+  color: #c62828;
+  font-size: 1.15rem;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 0.1rem;
+}
+
+.compare-btn {
+  display: block;
+  margin: 0 auto 1.5rem;
+  padding: 0.8rem 2rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  border: none;
+  border-radius: 8px;
+  background: #2e7d32;
+  color: #fff;
+  cursor: pointer;
+}
+
+.compare-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.basket-verdict {
+  background: #e8f5e9;
+  border: 1px solid #a5d6a7;
+  border-radius: 8px;
+  padding: 0.8rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 1.05rem;
+}
+
+.basket-table .missing {
+  font-size: 0.78rem;
+  color: #b71c1c;
+}
+
+.basket-subtitle {
+  margin: 1.6rem 0 0.6rem;
+  font-size: 1.05rem;
+}

@@ -1,13 +1,12 @@
 import { useState } from 'react';
 import SearchBox from './components/SearchBox';
 import PriceTable from './components/PriceTable';
+import Basket from './components/Basket';
 import type { SearchResponse } from './types';
-
-// URL do backend: vazio em dev (o Vite faz proxy para localhost:3001);
-// em produção aponta para o backend (ex.: https://meu-backend.onrender.com)
-const API_BASE = import.meta.env.VITE_API_URL ?? '';
+import { API_BASE } from './config';
 
 export default function App() {
+  const [tab, setTab] = useState<'comparar' | 'cesta'>('comparar');
   const [query, setQuery] = useState('');
   const [data, setData] = useState<SearchResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -36,17 +35,36 @@ export default function App() {
       <header>
         <h1>🛒 Comparador de Preços</h1>
         <p className="subtitle">
-          Compare preços de produtos alimentares entre supermercados portugueses
+          Compare preços de produtos alimentares entre supermercados portugueses, by RJCod3
         </p>
       </header>
 
-      <SearchBox onSearch={handleSearch} loading={loading} />
+      <nav className="tabs">
+        <button
+          className={tab === 'comparar' ? 'active' : ''}
+          onClick={() => setTab('comparar')}
+        >
+          🔍 Comparar produto
+        </button>
+        <button
+          className={tab === 'cesta' ? 'active' : ''}
+          onClick={() => setTab('cesta')}
+        >
+          🧺 Lista de compras
+        </button>
+      </nav>
 
-      {fatalError && <div className="error-banner">⚠️ {fatalError}</div>}
-      {loading && <div className="loading">A pesquisar em todas as superfícies…</div>}
+      {tab === 'comparar' ? (
+        <>
+          <SearchBox onSearch={handleSearch} loading={loading} />
 
-      {data && !loading && (
-        <PriceTable data={data} />
+          {fatalError && <div className="error-banner">⚠️ {fatalError}</div>}
+          {loading && <div className="loading">A pesquisar em todas as superfícies…</div>}
+
+          {data && !loading && <PriceTable data={data} />}
+        </>
+      ) : (
+        <Basket />
       )}
     </div>
   );
