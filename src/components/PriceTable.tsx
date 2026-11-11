@@ -34,6 +34,13 @@ export default function PriceTable({ data }: Props) {
 
   return (
     <section>
+      {data.stale && (
+        <div className="stale-note">
+          🕒 A mostrar preços em cache — o servidor está a atualizar em segundo plano.
+          Volte a pesquisar daqui a momentos para os valores mais recentes.
+        </div>
+      )}
+
       {data.errors.length > 0 && (
         <div className="warnings">
           {data.errors.map((e) => (

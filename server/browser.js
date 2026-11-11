@@ -14,7 +14,9 @@
 //                         pode voltar a headless)
 //
 // Diagnóstico: passe debugName a fetchRendered — grava screenshot + HTML
-// em debug/<nome>-<timestamp>.{png,html}.
+// em debug/<nome>-<timestamp>.{png,html} QUANDO ALGO FALHA. Para gravar
+// também no caminho feliz, use DEBUG_ARTIFACTS=true (desligado por defeito:
+// escrever 2 ficheiros por pesquisa é I/O desnecessário).
 
 import { mkdir, rm, writeFile } from 'fs/promises';
 import path from 'path';
@@ -37,6 +39,7 @@ const COOKIE_ACCEPTORS = [
 
 const DEBUG_DIR = path.resolve(process.cwd(), 'debug');
 const PROFILE_DIR = path.resolve(process.cwd(), 'browser-profile');
+const ALWAYS_SAVE_DEBUG = process.env.DEBUG_ARTIFACTS === 'true';
 
 // Páginas de desafio anti-bot (Cloudflare, DataDome, PerimeterX…)
 const CHALLENGE_RE =
@@ -151,19 +154,7 @@ export async function fetchRendered(
       throw err;
     }
 
-    if (acceptCookies) {
-      for (const sel of COOKIE_ACCEPTORS) {
-        try {
-          const btn = page.locator(sel).first();
-          if (await btn.isVisible({ timeout: 1500 })) {
-            await btn.click({ timeout: 2000 });
-            break;
-          }
-        } catch {
-          // seletor não existe neste site — tenta o seguinte
-        }
-      }
-    }
+    if (acceptCookies) await acceptCookiesBanner(page);
 
     // ── Espera por desafios anti-bot (Cloudflare/DataDome "Just a moment…") ──
     const isChallenge = () =>
@@ -234,7 +225,8 @@ export async function fetchRendered(
       }
     }
 
-    const debugPath = debugName ? await saveDebugArtifacts(page, debugName) : null;
+    const debugPath =
+      debugName && ALWAYS_SAVE_DEBUG ? await saveDebugArtifacts(page, debugName) : null;
     return {
       html: await page.content(),
       title: await page.title(),
@@ -243,6 +235,28 @@ export async function fetchRendered(
     };
   } finally {
     await page.close().catch(() => {});
+  }
+}
+
+// Espera curta por QUALQUER botão de cookies conhecido — todos os seletores
+// EM PARALELO (não em sequência) e clica no primeiro que aparecer. Sem banner,
+// custa no máximo o timeout único de 2,5s; com banner, sai assim que ele
+// renderiza (antes podia falhar se o banner aparecesse depois do check).
+async function acceptCookiesBanner(page) {
+  const races = COOKIE_ACCEPTORS.map((sel) =>
+    page
+      .locator(sel)
+      .first()
+      .waitFor({ state: 'visible', timeout: 2500 })
+      .then(() => sel),
+  );
+  const found = await Promise.any(races).catch(() => null);
+  if (!found) return false;
+  try {
+    await page.locator(found).first().click({ timeout: 2000 });
+    return true;
+  } catch {
+    return false;
   }
 }
 

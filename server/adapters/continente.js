@@ -15,6 +15,8 @@
 //   nome, preço e marca exatos, sem parsing de texto.
 
 import * as cheerio from 'cheerio';
+import { mkdir, writeFile } from 'fs/promises';
+import path from 'path';
 import { fetchRendered } from '../browser.js';
 
 const BASE = 'https://www.continente.pt';
@@ -30,11 +32,25 @@ const HEADERS = {
 const MAX_RESULTS = 30;
 const strategy = process.env.CONTINENTE_STRATEGY ?? 'auto';
 
-export async function searchContinente(query) {
-  const httpResult = strategy === 'browser' ? null : await tryHttp(query);
+// O HTML da pesquisa é uma SPA: o HTTP simples quase nunca devolve produtos.
+// Depois de 3 tentativas seguidas sem sucesso, o modo "auto" passa a ir
+// diretamente ao browser — poupa o custo do fetch+parse em cada pesquisa.
+// (Reinicia com o processo; se o HTTP voltar a funcionar, a conta zera.)
+let httpMissStreak = 0;
+const HTTP_SKIP_AFTER_MISSES = 3;
 
-  if (httpResult && httpResult.offers.length > 0) {
-    return httpResult.offers.slice(0, MAX_RESULTS);
+export async function searchContinente(query) {
+  const useHttp =
+    strategy === 'http' || (strategy === 'auto' && httpMissStreak < HTTP_SKIP_AFTER_MISSES);
+
+  let httpResult = null;
+  if (useHttp) {
+    httpResult = await tryHttp(query);
+    if (httpResult.offers.length > 0) {
+      httpMissStreak = 0; // o HTTP funcionou — volta a ser o caminho rápido
+      return httpResult.offers.slice(0, MAX_RESULTS);
+    }
+    httpMissStreak++;
   }
 
   if (strategy === 'http') {
@@ -55,7 +71,11 @@ export async function searchContinente(query) {
 
 async function tryHttp(query) {
   try {
-    const res = await fetch(SEARCH_URL(query), { headers: HEADERS });
+    const res = await fetch(SEARCH_URL(query), {
+      headers: HEADERS,
+      // Sem isto, uma ligação pendurada bloqueia até ao timeout do adapter
+      signal: AbortSignal.timeout(8000),
+    });
     if (!res.ok) return { offers: [], error: new Error(`HTTP ${res.status}`) };
     const offers = parseOffers(await res.text());
     return {
@@ -76,7 +96,10 @@ async function searchWithBrowser(query) {
       waitSelector: '[data-product-tile-impression]',
       waitForText: '€',
       acceptCookies: true,
-      debugName: 'continente',
+      // domcontentloaded + waitSelector é muito mais rápido que networkidle
+      // (analytics/beacons mantêm a rede "ocupada" durante segundos, o que
+      // faz o networkidle esperar muito mais do que o necessário)
+      waitUntil: 'domcontentloaded',
     });
   } catch (err) {
     if (err.code === 'ERR_MODULE_NOT_FOUND' || /Cannot find module/.test(err.message)) {
@@ -89,12 +112,29 @@ async function searchWithBrowser(query) {
 
   const offers = parseOffers(page.html);
   if (offers.length === 0) {
+    // Só aqui (parse falhou) é que vale a pena guardar o HTML para diagnóstico
+    const htmlPath = await saveHtmlDebug(page.html, 'continente-parse');
     throw new Error(
       `A página "${page.title}" tem resultados mas o parser não os reconheceu. ` +
-      `Envie o ficheiro ${page.debugPath?.replace('.png', '.html')} para atualizarmos os seletores.`,
+        (htmlPath
+          ? `HTML guardado em ${htmlPath} para atualizar os seletores.`
+          : 'Reenvie a pesquisa ou ative DEBUG_ARTIFACTS=true para diagnóstico.'),
     );
   }
   return offers.slice(0, MAX_RESULTS);
+}
+
+// Grava o HTML em debug/ apenas quando o parsing falha (diagnóstico raro).
+async function saveHtmlDebug(html, name) {
+  try {
+    const dir = path.resolve(process.cwd(), 'debug');
+    await mkdir(dir, { recursive: true });
+    const p = path.join(dir, `${name}-${Date.now()}.html`);
+    await writeFile(p, html, 'utf8');
+    return p;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Parsing ────────────────────────────────────────────────────────────────

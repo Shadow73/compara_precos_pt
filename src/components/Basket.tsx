@@ -19,6 +19,8 @@ interface SummaryRow {
   count: number;
   totalItems: number;
   missing: string[];
+  /** true = a superfície tem TODOS os artigos da cesta */
+  complete: boolean;
   isCheapest: boolean;
   diff: number | null;
   diffPct: number | null;
@@ -74,6 +76,12 @@ export default function Basket() {
     }
   }
 
+  // A tabela principal mostra apenas superfícies com TODOS os artigos
+  // da cesta — as parciais (1/3, 2/3, …) não são comparáveis.
+  const completeRows = result?.summary.filter((s) => s.complete) ?? [];
+  const partialRows = result?.summary.filter((s) => !s.complete) ?? [];
+  const cheapestRow = result?.summary.find((s) => s.isCheapest);
+
   return (
     <section className="basket">
       <form className="search-box" onSubmit={addItem}>
@@ -118,53 +126,72 @@ export default function Basket() {
 
       {result && !loading && (
         <>
-          {result.cheapestSupermarket && (
+          {result.cheapestSupermarket ? (
             <div className="basket-verdict">
-              🏆 <strong>{result.cheapestSupermarket}</strong> é a superfície mais
-              barata para esta cesta (
-              {result.summary
-                .find((s) => s.isCheapest)
-                ?.total.toFixed(2)}{' '}
-              €)
+              🏆 <strong>{result.cheapestSupermarket}</strong> é a superfície
+              mais barata com todos os {cheapestRow?.totalItems}{' '}
+              {cheapestRow?.totalItems === 1 ? 'artigo' : 'artigos'} da cesta (
+              {cheapestRow?.total.toFixed(2)} €)
+            </div>
+          ) : (
+            <div className="warnings">
+              <div className="warning">
+                ⚠️ Nenhuma superfície tem todos os artigos desta cesta — não é
+                possível comparar a cesta completa. Veja abaixo onde comprar
+                cada artigo mais barato.
+              </div>
             </div>
           )}
 
-          <table className="price-table basket-table">
-            <thead>
-              <tr>
-                <th>Superfície</th>
-                <th>Artigos</th>
-                <th className="num">Total da cesta</th>
-                <th className="num">Diferença</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.summary.map((s) => (
-                <tr key={s.supermarket} className={s.isCheapest ? 'cheapest' : ''}>
-                  <td>
-                    {s.supermarket}
-                    {s.isCheapest && <span className="best-tag">mais barata</span>}
-                  </td>
-                  <td>
-                    {s.count}/{s.totalItems}
-                    {s.missing.length > 0 && (
-                      <div className="missing">em falta: {s.missing.join(', ')}</div>
-                    )}
-                  </td>
-                  <td className="num price">
-                    {s.count > 0 ? `${s.total.toFixed(2)} €` : '—'}
-                  </td>
-                  <td className="num">
-                    {s.count === 0
-                      ? 'sem artigos'
-                      : s.isCheapest
-                        ? '—'
-                        : `+${s.diff?.toFixed(2)} € (+${s.diffPct}%)`}
-                  </td>
+          {completeRows.length > 0 && (
+            <table className="price-table basket-table">
+              <thead>
+                <tr>
+                  <th>Superfície</th>
+                  <th>Artigos</th>
+                  <th className="num">Total da cesta</th>
+                  <th className="num">Diferença</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {completeRows.map((s) => (
+                  <tr key={s.supermarket} className={s.isCheapest ? 'cheapest' : ''}>
+                    <td>
+                      {s.supermarket}
+                      {s.isCheapest && <span className="best-tag">mais barata</span>}
+                    </td>
+                    <td>
+                      {s.count}/{s.totalItems}
+                      {s.missing.length > 0 && (
+                        <div className="missing">em falta: {s.missing.join(', ')}</div>
+                      )}
+                    </td>
+                    <td className="num price">{s.total.toFixed(2)} €</td>
+                    <td className="num">
+                      {s.isCheapest ? '—' : `+${s.diff?.toFixed(2)} € (+${s.diffPct}%)`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {partialRows.length > 0 && (
+            <div className="partial-box">
+              <h4>Fora da comparação — sem todos os artigos</h4>
+              <ul>
+                {partialRows.map((s) => (
+                  <li key={s.supermarket}>
+                    <strong>{s.supermarket}</strong> — {s.count}/{s.totalItems}{' '}
+                    {s.totalItems === 1 ? 'artigo' : 'artigos'}
+                    {s.missing.length > 0 && (
+                      <> · em falta: {s.missing.join(', ')}</>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <h3 className="basket-subtitle">Onde comprar cada artigo mais barato</h3>
           <table className="price-table">

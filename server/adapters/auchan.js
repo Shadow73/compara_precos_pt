@@ -37,7 +37,11 @@ export async function searchAuchan(query) {
 
   for (const buildUrl of SEARCH_URLS) {
     try {
-      const res = await fetch(buildUrl(query), { headers: HEADERS });
+      const res = await fetch(buildUrl(query), {
+        headers: HEADERS,
+        // Sem isto, uma ligação pendurada bloqueia até ao timeout do adapter
+        signal: AbortSignal.timeout(12000),
+      });
       if (!res.ok) {
         lastError = new Error(`HTTP ${res.status}`);
         continue;

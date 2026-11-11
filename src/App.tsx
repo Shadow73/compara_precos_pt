@@ -35,8 +35,9 @@ export default function App() {
       <header>
         <h1>🛒 Comparador de Preços</h1>
         <p className="subtitle">
-          Compare preços de produtos alimentares entre supermercados portugueses, by RJCod3
+          Compare preços de produtos alimentares entre supermercados portugueses
         </p>
+        <p className="rj">By RJCod3</p>
       </header>
 
       <nav className="tabs">

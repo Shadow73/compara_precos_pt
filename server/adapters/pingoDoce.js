@@ -39,7 +39,11 @@ export async function searchPingoDoce(query) {
 
   for (const buildUrl of SEARCH_URLS) {
     try {
-      const res = await fetch(buildUrl(query), { headers: HEADERS });
+      const res = await fetch(buildUrl(query), {
+        headers: HEADERS,
+        // Sem isto, uma ligação pendurada bloqueia até ao timeout do adapter
+        signal: AbortSignal.timeout(12000),
+      });
       if (!res.ok) {
         lastError = new Error(`HTTP ${res.status}`);
         continue;
@@ -54,7 +58,10 @@ export async function searchPingoDoce(query) {
       if (offers.length === PAGE_SIZE && offers.length < MAX_RESULTS) {
         try {
           const sep = buildUrl(query).includes('?') ? '&' : '?';
-          const page2 = await fetch(`${buildUrl(query)}${sep}start=${PAGE_SIZE}`, { headers: HEADERS });
+          const page2 = await fetch(`${buildUrl(query)}${sep}start=${PAGE_SIZE}`, {
+            headers: HEADERS,
+            signal: AbortSignal.timeout(12000),
+          });
           if (page2.ok) offers.push(...parseTiles(await page2.text()));
         } catch {
           // página extra é opcional

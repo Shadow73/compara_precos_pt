@@ -1,324 +1,176 @@
-// Adapter: Lidl (lidl.pt) — pesquisa no browser com captura da API JSON
+// Adapter: Lidl (lidl.pt) — HTTP puro, SEM Playwright
 //
-// DIAGNÓSTICO (debug/ do utilizador, out/2026):
-//   - A página de pesquisa www.lidl.pt/q/search?q=<termo> FUNCIONA num
-//     browser real: "arroz" → 12 produtos; "cerveja preta" → ARGUS 2,99 €.
-//   - Os produtos NÃO vêm no HTML inicial — a app "storefront" Vue carrega-os
-//     via XHR/fetch. Por isso o HTTP simples não chega.
-//   - O site pode pedir a seleção da loja ("Seleciona a tua loja Lidl...").
+// DESCOBERTA (nov/2026): os resultados da pesquisa vêm EMBUTIDOS no HTML
+// inicial (server-side rendering) — a app Vue faz "hydration" dos tiles que
+// já estão na página; não há chamada XHR para os produtos da 1.ª página.
+// Cada produto é um <div ... data-grid-data="{JSON escapado}"> com TUDO:
+// nome, marca, preço, preço unitário, embalagem, promoção e URL.
 //
-// ESTA VERSÃO regista TUDO no terminal (linhas com prefixo [lidl]) para
-// podermos ver exactamente o que o browser vê.
-
-import { mkdir, writeFile } from 'fs/promises';
-import path from 'path';
-import * as cheerio from 'cheerio';
-import { getContext } from '../browser.js';
+// Por isso o Chromium deixou de ser preciso: um único GET devolve os mesmos
+// produtos que o browser via (no teste: 5-8 tiles idênticos em ~0,5-2s,
+// contra ~8-20s do caminho com Playwright, mais o arranque do browser).
+//
+// Cadeia de preço (nem todos os tiles têm o preço no mesmo sítio):
+//   1) tile.price.price                          — preço "normal"
+//   2) tile.regionsPrices["1"].currentPrice      — preço regional
+//   3) tile.regionsPrices["1"].currentLidlPlusPrice.price — promo Lidl Plus
+//      (última hipótese: alguns produtos SÓ têm este preço — ex. "Leite
+//      Pastagem Meio-gordo" a 0,79 €, antes 1,07 €)
+//
+// Sem dependências: só `fetch` do Node (18+). Se o site deixar de embutir os
+// produtos no HTML, o adapter devolve um erro claro em vez de dados vazios.
 
 const BASE = 'https://www.lidl.pt';
 
 const HEADERS = {
   'user-agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-  'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'accept-language': 'pt-PT,pt;q=0.9',
 };
 
 const MAX_RESULTS = 30;
+const TIMEOUT_MS = Number(process.env.LIDL_TIMEOUT_MS) > 0 ? Number(process.env.LIDL_TIMEOUT_MS) : 12000;
+const ATTEMPTS = 2; // 1 retry para falhas de rede transitórias
+const DEBUG = process.env.LIDL_DEBUG === 'true';
 
-const log = (...args) => console.log('[lidl]', ...args);
+const log = (...args) => {
+  if (DEBUG) console.log('[lidl]', ...args);
+};
 
 export async function searchLidl(query) {
-  // ── 1) HTTP rápido (raramente tem produtos, mas é instantâneo) ────────────
-  try {
-    const res = await fetch(`${BASE}/q/search?q=${encodeURIComponent(query)}`, {
-      headers: HEADERS,
-      signal: AbortSignal.timeout(6000),
-    });
-    log(`HTTP tentativa: ${res.status}`);
-    if (res.ok) {
-      const offers = extractFromAnyJson(await res.text());
-      log(`HTTP: ${offers.length} produtos no HTML`);
-      if (offers.length > 0) return filterByQuery(offers, query).slice(0, MAX_RESULTS);
-    }
-  } catch (err) {
-    log(`HTTP falhou: ${err.message}`);
-  }
+  const url = `${BASE}/q/search?q=${encodeURIComponent(query)}`;
+  const html = await fetchSearchHtml(url);
 
-  // ── 2) Browser: pesquisa real + interceção de TODAS as respostas JSON ─────
-  const offers = await searchViaBrowser(query);
+  const tiles = extractTiles(html);
+  log(`${tiles.length} tiles no HTML`);
+
+  let offers = tiles.map(tileToOffer).filter((o) => Number.isFinite(o.price) && o.price > 0);
+
+  // Rede de segurança barata: JSON-LD embutido (se um dia os tiles mudarem)
+  if (offers.length === 0) offers = parseJsonLdProducts(html);
+
   if (offers.length === 0) {
     throw new Error(
       `A pesquisa no lidl.pt não devolveu produtos para "${query}". ` +
-      `VERIFIQUE O TERMINAL: as linhas "[lidl]" dizem o que aconteceu. ` +
-      `Se o site pedir para selecionar a loja, corra uma vez com BROWSER_HEADED=true, ` +
-      `escolha a loja na janela e volte a testar.`,
+        `O site pode ter deixado de embutir os resultados no HTML ` +
+        `(estrutura mudou — abra ${url} no browser e confira; use LIDL_DEBUG=true para detalhe).`,
     );
   }
-  return filterByQuery(offers, query).slice(0, MAX_RESULTS);
+
+  const filtered = filterByQuery(offers, query);
+  return dedupe(filtered).slice(0, MAX_RESULTS);
 }
 
-// ─── Browser com interceção de respostas JSON ───────────────────────────────
+// ─── HTTP ──────────────────────────────────────────────────────────────────
 
-async function searchViaBrowser(query) {
-  const ctx = await getContext();
-  const page = await ctx.newPage();
-
-  // Captura TODAS as respostas JSON (sem filtro de URL — o endpoint pode
-  // ter um nome inesperado; filtramos pelo conteúdo depois)
-  const jsonResponses = [];
-  page.on('response', (res) => {
-    (async () => {
-      try {
-        const ct = res.headers()?.['content-type'] ?? '';
-        if (!ct.includes('application/json')) return;
-        const json = await res.json();
-        jsonResponses.push({ url: res.url(), json });
-      } catch {
-        // ignora
+async function fetchSearchHtml(url) {
+  let lastErr;
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    try {
+      const t0 = Date.now();
+      const res = await fetch(url, {
+        headers: HEADERS,
+        redirect: 'follow',
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      const html = await res.text();
+      log(`GET ${url} → ${res.status} (${(Date.now() - t0) / 1000}s, ${html.length} bytes, url final: ${res.url})`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
-    })();
-  });
-
-  const t0 = Date.now();
-  const elapsed = () => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
-  try {
-    const url = `${BASE}/q/search?q=${encodeURIComponent(query)}`;
-    log(`browser: a abrir ${url}`);
-    const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    log(`browser: goto HTTP ${res?.status()} (${elapsed()})`);
-
-    // ── espera pelos resultados ──
-    // 1) texto "€" (preços renderizados)
-    const hasEuro = await page
-      .waitForFunction(() => (document.body?.innerText ?? '').includes('€'), { timeout: 12000 })
-      .then(() => true)
-      .catch(() => false);
-    log(`browser: texto "€" no corpo? ${hasEuro} (${elapsed()})`);
-
-    // 2) tiles de produto visíveis (seletor conhecido do storefront)
-    const hasTiles = await page
-      .waitForSelector('.product-grid-box', { timeout: 8000 })
-      .then(() => true)
-      .catch(() => false);
-    log(`browser: tiles .product-grid-box visíveis? ${hasTiles} (${elapsed()})`);
-
-    await page.waitForTimeout(1500); // deixa as XHR acabarem
-    log(`browser: ${jsonResponses.length} respostas JSON capturadas`);
-    for (const r of jsonResponses.slice(0, 6)) {
-      log(`  · ${r.url.slice(0, 110)}`);
+      return html;
+    } catch (err) {
+      lastErr = err;
+      log(`tentativa ${attempt} falhou: ${err.message}`);
+      if (attempt < ATTEMPTS) await sleep(600);
     }
-
-    // deteta pedido de seleção de loja
-    const bodyText = await page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
-    if (/seleciona(r)? a tua loja|escolha a sua loja|selecione a (sua|tua) loja/i.test(bodyText)) {
-      log('browser: o site pede a SELEÇÃO DA LOJA — escolha-a uma vez em modo headed');
-    }
-
-    // 2a) produtos vindos da API (JSON intercetado)
-    const fromApi = [];
-    for (const { json } of jsonResponses) {
-      fromApi.push(...extractFromAnyJson(json));
-    }
-    log(`extração API: ${fromApi.length} produtos (${elapsed()})`);
-    if (fromApi.length > 0) return dedupe(fromApi);
-
-    // 2b) fallback: DOM renderizado
-    const html = await page.content();
-    const fromDom = extractFromDom(html);
-    log(`extração DOM: ${fromDom.length} produtos (${elapsed()})`);
-    if (fromDom.length === 0) {
-      await saveDebugArtifacts(page, '(extração vazia)');
-    }
-    return dedupe(fromDom);
-  } catch (err) {
-    await saveDebugArtifacts(page, `(erro: ${err.message})`);
-    throw err;
-  } finally {
-    await page.close().catch(() => {});
   }
+  throw new Error(`lidl.pt inacessível (${lastErr?.message ?? 'erro desconhecido'})`);
 }
 
-// ─── Diagnóstico: screenshot + HTML ─────────────────────────────────────────
+// ─── Extração dos tiles (data-grid-data) ────────────────────────────────────
 
-async function saveDebugArtifacts(page, note = '') {
-  try {
-    const dir = path.resolve(process.cwd(), 'debug');
-    await mkdir(dir, { recursive: true });
-    const stamp = `lidl-search-${Date.now()}`;
-    await page.screenshot({ path: path.join(dir, `${stamp}.png`) }).catch(() => {});
-    const html = await page.content().catch(() => '');
-    await writeFile(path.join(dir, `${stamp}.html`), html, 'utf8').catch(() => {});
-    log(`diagnóstico: debug/${stamp}.png/.html ${note}`);
-  } catch (err) {
-    console.error('[lidl] FALHA ao guardar debug:', err.message);
-  }
+// O atributo codifica as aspas como &quot;, pelo que o valor nunca contém
+// aspas "vivas" — [^"]* captura o JSON completo com segurança.
+// Nota: usa-se matchAll (não exec) — as pesquisas da cesta correm em
+// paralelo e um regex /g partilhado com lastIndex seria um bug de
+// concorrência entre chamadas simultâneas.
+const GRID_DATA_RE = / data-grid-data="([^"]*)"/g;
+
+function decodeEntities(s) {
+  return s
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&'); // por último: pode estar dentro de &amp;quot;
 }
 
-// ─── Extração genérica de produtos de qualquer JSON ─────────────────────────
-
-function extractFromAnyJson(payload) {
-  const offers = [];
-  const seen = new Set();
-
-  function walk(node, depth) {
-    if (depth > 10 || node == null) return;
-    if (Array.isArray(node)) {
-      for (const item of node) walk(item, depth + 1);
-      return;
+function extractTiles(html) {
+  const tiles = [];
+  for (const m of html.matchAll(GRID_DATA_RE)) {
+    try {
+      tiles.push(JSON.parse(decodeEntities(m[1])));
+    } catch (err) {
+      log(`tile ilegível: ${err.message}`);
     }
-    if (typeof node !== 'object') return;
+  }
+  return tiles;
+}
 
-    const name = node.name ?? node.title ?? node.productName ?? node.product?.name;
-    if (typeof name === 'string' && name.length > 3) {
-      const priceVal =
-        node.price ?? node.currentPrice ?? node.priceValue ?? node.price?.value ??
-        node.product?.price;
-      const price = Number(priceVal);
-      if (Number.isFinite(price) && price > 0) {
-        const key = `${name}|${price}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          const old =
-            node.oldPrice ?? node.wasPrice ?? node.regularPrice ?? node.price?.old;
-          const unitPrice =
-            node.unitPrice ?? node.pricePerUnit ?? node.basePrice ?? node.price?.perUnit;
-          const unit = node.unit ?? node.baseUnit ?? node.price?.unit;
-          const url =
-            node.url ?? node.productUrl ?? node.slug ?? node.product?.url;
+/** Converte um tile do data-grid-data na oferta padronizada dos adapters. */
+function tileToOffer(t) {
+  const priceObj = pickPriceObject(t);
+  if (!priceObj) return { name: t.title, price: NaN }; // filtrado depois
 
-          offers.push({
-            supermarket: 'Lidl',
-            brand:
-              (typeof node.brand === 'string' ? node.brand : node.brand?.name) ??
-              guessBrand(name),
-            name,
-            price,
-            unitPrice: Number.isFinite(Number(unitPrice)) ? Number(unitPrice) : undefined,
-            unit: typeof unit === 'string' ? unit : undefined,
-            promo: old ? `antes ${formatPt(old)}` : undefined,
-            url: url && typeof url === 'string' ? new URL(url, BASE).href : undefined,
-          });
-        }
-      }
-    }
+  const name = String(t.title ?? t.fullTitle ?? '').replace(/\s+/g, ' ').trim();
+  const price = Number(priceObj.price);
+  const basePriceText = priceObj.basePrice?.text ?? t.price?.basePrice?.text ?? '';
+  const um = String(basePriceText).match(/1\s*(kg|l|lt|un)\s*=\s*(\d+[.,]\d+)/i);
 
-    for (const v of Object.values(node)) walk(v, depth + 1);
+  // Promoção: preço "antes" (tachado) e/ou texto de desconto ("-21%")
+  const disc = priceObj.discount ?? {};
+  const oldPrice = Number(disc.deletedPrice);
+  const promoBits = [];
+  if (Number.isFinite(oldPrice) && oldPrice > price) promoBits.push(`antes ${formatPt(oldPrice)}`);
+  if (typeof disc.discountText === 'string' && disc.discountText.trim()) {
+    promoBits.push(disc.discountText.trim());
   }
 
-  if (typeof payload === 'string') {
-    offers.push(...parseJsonLdProducts(payload));
-    return offers;
-  }
+  const href = t.canonicalPath ?? t.canonicalUrl;
 
-  walk(payload, 0);
-  return offers;
+  return {
+    supermarket: 'Lidl',
+    brand: t.brand?.name ?? guessBrand(name),
+    name,
+    price,
+    unitPrice: um ? Number(um[2].replace(',', '.')) : undefined,
+    unit: um ? um[1].replace('lt', 'l') : undefined,
+    promo: promoBits.length ? promoBits.join(' · ') : undefined,
+    url: href && typeof href === 'string' ? new URL(href, BASE).href : undefined,
+  };
 }
 
-// ─── Fallback: DOM renderizado (seletores do storefront + genérico) ─────────
+/**
+ * Cadeia de preço: topo → regional → Lidl Plus. Devolve o objeto que tem o
+ * número do preço (com basePrice/packaging/discount no mesmo sítio).
+ */
+function pickPriceObject(t) {
+  if (Number.isFinite(Number(t.price?.price)) && Number(t.price?.price) > 0) return t.price;
 
-function extractFromDom(html) {
-  const $ = cheerio.load(html);
-  const offers = [];
-  const seen = new Set();
+  const reg = t.regionsPrices?.['1'] ?? {};
+  const cur = reg.currentPrice;
+  if (Number.isFinite(Number(cur?.price)) && Number(cur.price) > 0) return cur;
 
-  // 1) Tiles reais do storefront Vue — cada um tem data-gridbox-impression
-  //    com JSON URL-encoded: {brand, name, price, id, ...}
-  $('.product-grid-box').each((_, el) => {
-    const $box = $(el);
-    let data = {};
-    const attr = $box.attr('data-gridbox-impression');
-    if (attr) {
-      try {
-        data = JSON.parse(decodeURIComponent(attr));
-      } catch {
-        // atributo inválido — usa os seletores abaixo
-      }
-    }
+  const plus = reg.currentLidlPlusPrice?.price;
+  if (Number.isFinite(Number(plus?.price)) && Number(plus.price) > 0) return plus;
 
-    const brand =
-      data.brand ||
-      $box.find('.product-grid-box__brand').first().text().trim() ||
-      '';
-    const name = String(
-      data.name ||
-        $box.find('.product-grid-box__title').first().text(),
-    ).replace(/\s+/g, ' ').trim();
-
-    let price = Number(data.price);
-    if (!Number.isFinite(price)) {
-      const t = $box.find('.ods-price__value').first().text().replace(/\s/g, '').replace(',', '.');
-      price = Number(t);
-    }
-    if (!name || !Number.isFinite(price) || price <= 0) return;
-
-    // preço antigo (strike-through) → promoção
-    const oldText = $box.find('s').first().text().replace(/\s/g, '').replace(',', '.');
-    const oldPrice = Number(oldText);
-    const promo =
-      Number.isFinite(oldPrice) && oldPrice > price
-        ? `antes ${formatPt(oldPrice)}`
-        : undefined;
-
-    // preço unitário: footer "Emb. 2 kg 1 kg = 0,80"
-    const footer = $box.find('.ods-price__footer').first().text();
-    const um = footer.match(/1\s*(kg|l|lt|un)\s*=\s*(\d+[.,]\d+)/i);
-
-    const href = $box.find('a[href*="/p/"]').first().attr('href');
-
-    const key = `${name}|${price}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-
-    offers.push({
-      supermarket: 'Lidl',
-      brand,
-      name,
-      price,
-      unitPrice: um ? Number(um[2].replace(',', '.')) : undefined,
-      unit: um ? um[1].replace('lt', 'l') : undefined,
-      promo,
-      url: href ? new URL(href.split('#')[0].split('?')[0], BASE).href : undefined,
-    });
-  });
-
-  if (offers.length > 0) return offers;
-
-  // 2) fallback genérico (estrutura mudou?): seletores amplos + subida por
-  //    preços — a página de pesquisa só mostra produtos, é seguro
-  $('a[href*="/p/"]').each((_, el) => {
-    const $link = $(el);
-    const name = $link.text().replace(/\s+/g, ' ').trim();
-    const href = $link.attr('href');
-    if (!name || name.length < 3 || !href) return;
-
-    let node = $link.parent();
-    for (let i = 0; i < 5 && node.length; i++) {
-      const text = node.text();
-      const m = text.match(/(\d{1,3}[.,]\d{2})\s*€/);
-      if (m && text.length < 500) {
-        const price = Number(m[1].replace(',', '.'));
-        const key = `${name}|${price}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          offers.push({
-            supermarket: 'Lidl',
-            brand: guessBrand(name),
-            name,
-            price,
-            url: new URL(href.split('#')[0].split('?')[0], BASE).href,
-          });
-        }
-        return;
-      }
-      node = node.parent();
-    }
-  });
-
-  return offers;
+  return null;
 }
 
-// ─── JSON-LD ────────────────────────────────────────────────────────────────
+// ─── Rede de segurança: JSON-LD (se a estrutura dos tiles mudar) ────────────
 
 function parseJsonLdProducts(html) {
   const offers = [];
@@ -329,8 +181,7 @@ function parseJsonLdProducts(html) {
       const data = JSON.parse(m[1]);
       const items = Array.isArray(data) ? data : [data];
       for (const item of items) {
-        const nodes =
-          item?.['@type'] === 'ItemList' ? item.itemListElement : [item];
+        const nodes = item?.['@type'] === 'ItemList' ? item.itemListElement : [item];
         for (const n of nodes) {
           const p = n?.item ?? n;
           if (p?.['@type'] !== 'Product' || !p?.name) continue;
@@ -353,7 +204,7 @@ function parseJsonLdProducts(html) {
   return offers;
 }
 
-// ─── Utilitários ────────────────────────────────────────────────────────────
+// ─── Utilitários (iguais ao resto do projeto) ───────────────────────────────
 
 function filterByQuery(offers, query) {
   const words = normalize(query).split(/\s+/).filter(Boolean);
@@ -391,4 +242,8 @@ function dedupe(offers) {
     seen.add(key);
     return true;
   });
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }

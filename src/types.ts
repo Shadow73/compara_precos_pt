@@ -18,4 +18,6 @@ export interface SearchResponse {
   query: string;
   offers: ProductOffer[];
   errors: SupermarketError[];
+  /** true = servido da cache expirada enquanto o servidor revalida em background */
+  stale?: boolean;
 }
